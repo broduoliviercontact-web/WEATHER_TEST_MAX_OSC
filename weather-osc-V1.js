@@ -6,7 +6,7 @@ const API_KEY = process.env.API_CODE;         // ta clé API OpenWeatherMap
 const CITY = 'london';                         // ville par défaut (utilisée si data.name absent)
 const OSC_IP = '127.0.0.1';                   // IP où tourne Max / udpreceive
 const OSC_PORT = 7400;                        // port UDP dans Max
-let REFRESH_EVERY_MS = 30 * 1000;             // intervalle par défaut (ms) — change si besoin
+let REFRESH_EVERY_MS = 60 * 1000;             // intervalle par défaut (ms) — change si besoin
 
 // Backoff (en ms) pour erreurs réseau / rate-limit
 const BACKOFF_BASE = 2000;    // 2s
@@ -98,8 +98,6 @@ function mapConditionToCode(main) {
 }
 
 // --- Envoi / traitement météo ---
-// NOTE: cette fonction lance des erreurs si la requête échoue,
-// afin que la boucle principale puisse appliquer un backoff.
 async function sendWeather() {
   const data = await getWeather();
 
@@ -129,14 +127,17 @@ async function sendWeather() {
   const timezoneOffset = data.timezone ?? 0; // en secondes
   const sunriseTs = data.sys?.sunrise;
   const sunsetTs = data.sys?.sunset;
-  const nowTs = data.dt;
+  const nowTsApi = data.dt; // timestamp renvoyé par l'API (UTC seconds)
+  const nowTsLocalClock = Math.floor(Date.now() / 1000); // timestamp côté client (UTC seconds)
 
-  let sunriseHour, sunsetHour, nowHour;
+  let sunriseHour, sunsetHour, nowHour;               // valeurs "principales" (on choisit localClock pour now)
   let sunriseNorm, sunsetNorm, dayLengthHours, dayLengthNorm;
   let dayProgress, isDay;
 
-  // formatted strings
-  let nowIso, nowLocalStr, sunriseIso, sunriseLocalStr, sunsetIso, sunsetLocalStr;
+  // formatted strings (API-based)
+  let nowIsoApi, nowLocalStrApi, nowHourApi;
+  // formatted strings (local clock but converted to city timezone)
+  let nowIso, nowLocalStr, nowHourLocal;
 
   if (typeof sunriseTs === 'number') {
     sunriseHour = toLocalHourFloat(sunriseTs, timezoneOffset);
@@ -154,12 +155,25 @@ async function sendWeather() {
     dayLengthHours = Math.max(0, sunsetHour - sunriseHour);
     dayLengthNorm = dayLengthHours / 24;
   }
-  if (typeof nowTs === 'number') {
-    nowHour = toLocalHourFloat(nowTs, timezoneOffset);
-    nowIso = formatLocalIso(nowTs, timezoneOffset);
-    nowLocalStr = formatLocalTimeHMS(nowTs, timezoneOffset);
+
+  // --- now values from API (as before) ---
+  if (typeof nowTsApi === 'number') {
+    nowHourApi = toLocalHourFloat(nowTsApi, timezoneOffset);
+    nowIsoApi = formatLocalIso(nowTsApi, timezoneOffset);
+    nowLocalStrApi = formatLocalTimeHMS(nowTsApi, timezoneOffset);
   }
 
+  // --- now values from local clock (this fixes the "stuck" nowLocalStr problem) ---
+  if (typeof nowTsLocalClock === 'number') {
+    // convert client timestamp to city's local time using timezoneOffset (seconds)
+    nowHourLocal = toLocalHourFloat(nowTsLocalClock, timezoneOffset);
+    nowIso = formatLocalIso(nowTsLocalClock, timezoneOffset);
+    nowLocalStr = formatLocalTimeHMS(nowTsLocalClock, timezoneOffset);
+    // choose the main "nowHour" to be the local-clock version so that consumers get an actual moving clock
+    nowHour = nowHourLocal;
+  }
+
+  // progression dans la journée (utilise nowHour calculé depuis local clock si possible)
   if (typeof nowHour === 'number' && typeof sunriseHour === 'number' && typeof sunsetHour === 'number') {
     if (nowHour < sunriseHour) {
       isDay = 0;
@@ -176,11 +190,18 @@ async function sendWeather() {
   // Ville : on envoie preferentiellement data.name si présent
   const cityName = (typeof data.name === 'string' && data.name.length > 0) ? data.name : CITY;
 
-  // Log synthétique
+  // Log synthétique (ajout des deux sources pour "now")
   console.log('Météo reçue :', {
     city: cityName,
     temp, humidity, wind, windDeg, main, mainCode, rain, snow,
-    nowHour, nowIso, nowLocalStr,
+    // now: local clock (moving)
+    nowHour,
+    nowIso,
+    nowLocalStr,
+    // now from API (may be identical across fetches)
+    nowHourApi,
+    nowIsoApi,
+    nowLocalStrApi,
     sunriseHour, sunriseIso, sunriseLocalStr,
     sunsetHour, sunsetIso, sunsetLocalStr,
     sunriseNorm, sunsetNorm, dayLengthHours, dayLengthNorm, dayProgress, isDay
@@ -218,7 +239,7 @@ async function sendWeather() {
     oscClient.send('/weather/snow', snow);
   }
 
-  // heures locales float 0-24
+  // Heures locales float 0-24 (on envoie la version "local clock" comme now_hour)
   if (typeof nowHour === 'number') {
     oscClient.send('/weather/now_hour', nowHour);
   }
@@ -229,13 +250,25 @@ async function sendWeather() {
     oscClient.send('/weather/sunset_hour', sunsetHour);
   }
 
-  // formatted strings (ISO and HH:MM:SS)
+  // formatted strings (NOW) : envoi de la version "locale" (clock) comme nom principal...
   if (typeof nowIso === 'string') {
     oscClient.send('/weather/now_iso', nowIso);
   }
   if (typeof nowLocalStr === 'string') {
     oscClient.send('/weather/now_local', nowLocalStr);
   }
+
+  // ...et on envoie aussi les versions basées sur l'API en suffixant _api pour debug/trace
+  if (typeof nowIsoApi === 'string') {
+    oscClient.send('/weather/now_iso_api', nowIsoApi);
+  }
+  if (typeof nowLocalStrApi === 'string') {
+    oscClient.send('/weather/now_local_api', nowLocalStrApi);
+  }
+  if (typeof nowHourApi === 'number') {
+    oscClient.send('/weather/now_hour_api', nowHourApi);
+  }
+
   if (typeof sunriseIso === 'string') {
     oscClient.send('/weather/sunrise_iso', sunriseIso);
   }
