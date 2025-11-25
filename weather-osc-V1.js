@@ -1,13 +1,19 @@
 const { Client } = require('node-osc');
 require('dotenv').config();
 
-const API_KEY = process.env.API_CODE;              // ta clé API
-const CITY = 'paris';                          // ville
-const OSC_IP = '127.0.0.1';                        // IP de la machine où tourne Max
-const OSC_PORT = 7400;                             // port UDP dans Max (udpreceive 7400)
-const REFRESH_EVERY_MS = 1 * 60 * 1000;            // intervalle (ici 1 min)
+// --- Configuration ---
+const API_KEY = process.env.API_CODE;         // ta clé API OpenWeatherMap
+const CITY = 'london';                         // ville par défaut (utilisée si data.name absent)
+const OSC_IP = '127.0.0.1';                   // IP où tourne Max / udpreceive
+const OSC_PORT = 7400;                        // port UDP dans Max
+let REFRESH_EVERY_MS = 30 * 1000;             // intervalle par défaut (ms) — change si besoin
 
-// --- Codes météo vers entiers ---
+// Backoff (en ms) pour erreurs réseau / rate-limit
+const BACKOFF_BASE = 2000;    // 2s
+const BACKOFF_MAX = 120_000;  // 2min
+const BACKOFF_MULT = 2;
+
+// --- Mapping conditions -> codes entiers ---
 const CONDITION_CODES = {
   Clear:        0,
   Clouds:       1,
@@ -29,9 +35,12 @@ const CONDITION_CODES = {
 // --- Client OSC ---
 const oscClient = new Client(OSC_IP, OSC_PORT);
 
-// --- Utils ---
-// Convertit un timestamp UTC (en secondes) + offset (en secondes)
-// en heure locale float 0–24 (ex : 13.5 = 13h30)
+// --- Utils date/heure ---
+function pad2(n) {
+  return String(n).padStart(2, '0');
+}
+
+// Convertit timestamp UTC (s) + offset (s) -> heure locale float 0-24
 function toLocalHourFloat(utcSeconds, timezoneOffsetSeconds) {
   const d = new Date((utcSeconds + timezoneOffsetSeconds) * 1000);
   const h = d.getUTCHours();
@@ -40,11 +49,7 @@ function toLocalHourFloat(utcSeconds, timezoneOffsetSeconds) {
   return h + m / 60 + s / 3600;
 }
 
-function pad2(n) {
-  return String(n).padStart(2, '0');
-}
-
-// Formate en ISO local sans décalage timezone (YYYY-MM-DDTHH:MM:SS)
+// ISO local YYYY-MM-DDTHH:MM:SS (sans suffixe fuseau)
 function formatLocalIso(utcSeconds, timezoneOffsetSeconds) {
   const d = new Date((utcSeconds + timezoneOffsetSeconds) * 1000);
   const Y = d.getUTCFullYear();
@@ -56,7 +61,7 @@ function formatLocalIso(utcSeconds, timezoneOffsetSeconds) {
   return `${Y}-${M}-${D}T${h}:${m}:${s}`;
 }
 
-// Formate en heure lisible HH:MM:SS
+// Heure lisible HH:MM:SS
 function formatLocalTimeHMS(utcSeconds, timezoneOffsetSeconds) {
   const d = new Date((utcSeconds + timezoneOffsetSeconds) * 1000);
   const h = pad2(d.getUTCHours());
@@ -65,16 +70,22 @@ function formatLocalTimeHMS(utcSeconds, timezoneOffsetSeconds) {
   return `${h}:${m}:${s}`;
 }
 
-// --- Fonctions météo ---
-
+// --- Requête API ---
 async function getWeather() {
-  const url = `https://api.openweathermap.org/data/2.5/weather?q=${CITY}&appid=${API_KEY}&units=metric`;
+  if (!API_KEY) {
+    const e = new Error('API key non fournie (process.env.API_CODE)');
+    e.status = 0;
+    throw e;
+  }
 
+  const url = `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(CITY)}&appid=${API_KEY}&units=metric`;
   const resp = await fetch(url);
 
   if (!resp.ok) {
     const errText = await resp.text();
-    throw new Error(`HTTP ${resp.status} – ${errText}`);
+    const err = new Error(`HTTP ${resp.status} – ${errText}`);
+    err.status = resp.status;
+    throw err;
   }
 
   const data = await resp.json();
@@ -86,214 +97,209 @@ function mapConditionToCode(main) {
   return CONDITION_CODES[main] ?? -1;
 }
 
+// --- Envoi / traitement météo ---
+// NOTE: cette fonction lance des erreurs si la requête échoue,
+// afin que la boucle principale puisse appliquer un backoff.
 async function sendWeather() {
-  try {
-    const data = await getWeather();
+  const data = await getWeather();
 
-    const temp = data.main?.temp;
-    const humidity = data.main?.humidity;
-    const wind = data.wind?.speed;
-    const windDeg = data.wind?.deg; // direction du vent en degrés
-    const main = data.weather?.[0]?.main || 'Unknown';  // ex: "Clear", "Clouds", "Rain"
-    const mainCode = mapConditionToCode(main);
+  // Valeurs brutes
+  const temp = data.main?.temp;
+  const humidity = data.main?.humidity;
+  const wind = data.wind?.speed;
+  const windDeg = data.wind?.deg;
+  const main = data.weather?.[0]?.main || 'Unknown';
+  const mainCode = mapConditionToCode(main);
 
-    // ---- Rain / Snow (mm) ----
-    // OpenWeather peut renvoyer "1h" ou "3h" (ou aucune des deux).
-    let rain = undefined;
-    if (data.rain) {
-      rain = (typeof data.rain['1h'] === 'number') ? data.rain['1h']
-           : (typeof data.rain['3h'] === 'number') ? data.rain['3h']
-           : undefined;
-    }
+  // Rain / Snow (priorise 1h puis 3h)
+  let rain = undefined;
+  if (data.rain) {
+    rain = (typeof data.rain['1h'] === 'number') ? data.rain['1h']
+         : (typeof data.rain['3h'] === 'number') ? data.rain['3h']
+         : undefined;
+  }
+  let snow = undefined;
+  if (data.snow) {
+    snow = (typeof data.snow['1h'] === 'number') ? data.snow['1h']
+         : (typeof data.snow['3h'] === 'number') ? data.snow['3h']
+         : undefined;
+  }
 
-    let snow = undefined;
-    if (data.snow) {
-      snow = (typeof data.snow['1h'] === 'number') ? data.snow['1h']
-           : (typeof data.snow['3h'] === 'number') ? data.snow['3h']
-           : undefined;
-    }
+  // Heures / soleil
+  const timezoneOffset = data.timezone ?? 0; // en secondes
+  const sunriseTs = data.sys?.sunrise;
+  const sunsetTs = data.sys?.sunset;
+  const nowTs = data.dt;
 
-    // ---- Soleil -> valeurs musicales et heures locales ----
-    const timezoneOffset = data.timezone ?? 0;    // en secondes
-    const sunriseTs = data.sys?.sunrise;          // timestamp UTC (s)
-    const sunsetTs  = data.sys?.sunset;           // timestamp UTC (s)
-    const nowTs     = data.dt;                    // "maintenant" UTC (s)
+  let sunriseHour, sunsetHour, nowHour;
+  let sunriseNorm, sunsetNorm, dayLengthHours, dayLengthNorm;
+  let dayProgress, isDay;
 
-    let sunriseHour, sunsetHour, nowHour;
-    let sunriseNorm, sunsetNorm;
-    let dayLengthHours, dayLengthNorm;
-    let dayProgress, isDay;
+  // formatted strings
+  let nowIso, nowLocalStr, sunriseIso, sunriseLocalStr, sunsetIso, sunsetLocalStr;
 
-    // formatted strings
-    let nowIso, nowLocalStr, sunriseIso, sunriseLocalStr, sunsetIso, sunsetLocalStr;
+  if (typeof sunriseTs === 'number') {
+    sunriseHour = toLocalHourFloat(sunriseTs, timezoneOffset);
+    sunriseIso = formatLocalIso(sunriseTs, timezoneOffset);
+    sunriseLocalStr = formatLocalTimeHMS(sunriseTs, timezoneOffset);
+    sunriseNorm = sunriseHour / 24;
+  }
+  if (typeof sunsetTs === 'number') {
+    sunsetHour = toLocalHourFloat(sunsetTs, timezoneOffset);
+    sunsetIso = formatLocalIso(sunsetTs, timezoneOffset);
+    sunsetLocalStr = formatLocalTimeHMS(sunsetTs, timezoneOffset);
+    sunsetNorm = sunsetHour / 24;
+  }
+  if (typeof sunriseHour === 'number' && typeof sunsetHour === 'number') {
+    dayLengthHours = Math.max(0, sunsetHour - sunriseHour);
+    dayLengthNorm = dayLengthHours / 24;
+  }
+  if (typeof nowTs === 'number') {
+    nowHour = toLocalHourFloat(nowTs, timezoneOffset);
+    nowIso = formatLocalIso(nowTs, timezoneOffset);
+    nowLocalStr = formatLocalTimeHMS(nowTs, timezoneOffset);
+  }
 
-    if (typeof sunriseTs === 'number' && typeof sunsetTs === 'number') {
-      // heures locales 0–24
-      sunriseHour    = toLocalHourFloat(sunriseTs, timezoneOffset);
-      sunsetHour     = toLocalHourFloat(sunsetTs,  timezoneOffset);
+  if (typeof nowHour === 'number' && typeof sunriseHour === 'number' && typeof sunsetHour === 'number') {
+    if (nowHour < sunriseHour) {
+      isDay = 0;
+      dayProgress = 0;
+    } else if (nowHour > sunsetHour) {
+      isDay = 0;
+      dayProgress = 1;
+    } else {
+      isDay = 1;
+      dayProgress = (nowHour - sunriseHour) / (sunsetHour - sunriseHour);
+    }
+  }
 
-      // durée du jour
-      dayLengthHours = Math.max(0, sunsetHour - sunriseHour); // en heures
-      dayLengthNorm  = dayLengthHours / 24;                   // 0–1
+  // Ville : on envoie preferentiellement data.name si présent
+  const cityName = (typeof data.name === 'string' && data.name.length > 0) ? data.name : CITY;
 
-      // positions normalisées
-      sunriseNorm    = sunriseHour / 24;                      // 0–1
-      sunsetNorm     = sunsetHour / 24;                       // 0–1
-    }
+  // Log synthétique
+  console.log('Météo reçue :', {
+    city: cityName,
+    temp, humidity, wind, windDeg, main, mainCode, rain, snow,
+    nowHour, nowIso, nowLocalStr,
+    sunriseHour, sunriseIso, sunriseLocalStr,
+    sunsetHour, sunsetIso, sunsetLocalStr,
+    sunriseNorm, sunsetNorm, dayLengthHours, dayLengthNorm, dayProgress, isDay
+  });
 
-    if (typeof nowTs === 'number') {
-      nowHour = toLocalHourFloat(nowTs, timezoneOffset);
-      nowIso = formatLocalIso(nowTs, timezoneOffset);
-      nowLocalStr = formatLocalTimeHMS(nowTs, timezoneOffset);
-    }
+  // ---- Envois OSC ----
 
-    if (typeof sunriseTs === 'number') {
-      sunriseIso = formatLocalIso(sunriseTs, timezoneOffset);
-      sunriseLocalStr = formatLocalTimeHMS(sunriseTs, timezoneOffset);
-    }
+  // city (string)
+  if (typeof cityName === 'string') {
+    oscClient.send('/weather/city', cityName);
+  }
 
-    if (typeof sunsetTs === 'number') {
-      sunsetIso = formatLocalIso(sunsetTs, timezoneOffset);
-      sunsetLocalStr = formatLocalTimeHMS(sunsetTs, timezoneOffset);
-    }
+  if (typeof temp === 'number') {
+    oscClient.send('/weather/temp', temp);
+  }
+  if (typeof humidity === 'number') {
+    oscClient.send('/weather/humidity', humidity);
+  }
+  if (typeof wind === 'number') {
+    oscClient.send('/weather/wind', wind);
+  }
+  if (typeof windDeg === 'number') {
+    oscClient.send('/weather/wind_deg', windDeg);
+  }
 
-    // progression dans la journée (0 = lever, 1 = coucher)
-    if (typeof nowHour === 'number' && typeof sunriseHour === 'number' && typeof sunsetHour === 'number') {
-      if (nowHour < sunriseHour) {
-        isDay = 0;
-        dayProgress = 0;     // avant le lever
-      } else if (nowHour > sunsetHour) {
-        isDay = 0;
-        dayProgress = 1;     // après le coucher
-      } else {
-        isDay = 1;
-        dayProgress = (nowHour - sunriseHour) / (sunsetHour - sunriseHour); // 0–1
-      }
-    }
+  // main (string) + code (int)
+  oscClient.send('/weather/main', main);
+  oscClient.send('/weather/mainCode', mainCode);
 
-    console.log('Météo reçue :', {
-      city: CITY,
-      temp,
-      humidity,
-      wind,
-      windDeg,
-      main,
-      mainCode,
-      rain,
-      snow,
-      nowHour,
-      nowIso,
-      nowLocalStr,
-      sunriseHour,
-      sunriseIso,
-      sunriseLocalStr,
-      sunsetHour,
-      sunsetIso,
-      sunsetLocalStr,
-      sunriseNorm,
-      sunsetNorm,
-      dayLengthHours,
-      dayLengthNorm,
-      dayProgress,
-      isDay
-    });
+  // precipitation (mm)
+  if (typeof rain === 'number') {
+    oscClient.send('/weather/rain', rain);
+  }
+  if (typeof snow === 'number') {
+    oscClient.send('/weather/snow', snow);
+  }
 
-    // ---- Envois OSC ----
+  // heures locales float 0-24
+  if (typeof nowHour === 'number') {
+    oscClient.send('/weather/now_hour', nowHour);
+  }
+  if (typeof sunriseHour === 'number') {
+    oscClient.send('/weather/sunrise_hour', sunriseHour);
+  }
+  if (typeof sunsetHour === 'number') {
+    oscClient.send('/weather/sunset_hour', sunsetHour);
+  }
 
-    if (typeof temp === 'number') {
-      oscClient.send('/weather/temp', temp);
-    }
+  // formatted strings (ISO and HH:MM:SS)
+  if (typeof nowIso === 'string') {
+    oscClient.send('/weather/now_iso', nowIso);
+  }
+  if (typeof nowLocalStr === 'string') {
+    oscClient.send('/weather/now_local', nowLocalStr);
+  }
+  if (typeof sunriseIso === 'string') {
+    oscClient.send('/weather/sunrise_iso', sunriseIso);
+  }
+  if (typeof sunriseLocalStr === 'string') {
+    oscClient.send('/weather/sunrise_local', sunriseLocalStr);
+  }
+  if (typeof sunsetIso === 'string') {
+    oscClient.send('/weather/sunset_iso', sunsetIso);
+  }
+  if (typeof sunsetLocalStr === 'string') {
+    oscClient.send('/weather/sunset_local', sunsetLocalStr);
+  }
 
-    if (typeof humidity === 'number') {
-      oscClient.send('/weather/humidity', humidity);
-    }
-
-    if (typeof wind === 'number') {
-      oscClient.send('/weather/wind', wind);
-    }
-
-    if (typeof windDeg === 'number') {
-      oscClient.send('/weather/wind_deg', windDeg);
-    }
-
-    // Texte + code météo
-    oscClient.send('/weather/main', main);
-    oscClient.send('/weather/mainCode', mainCode);
-
-    // Rain / Snow (mm)
-    if (typeof rain === 'number') {
-      // mm for last hour (or 3 hours if only available)
-      oscClient.send('/weather/rain', rain);
-    }
-    if (typeof snow === 'number') {
-      oscClient.send('/weather/snow', snow);
-    }
-
-    // Heures locales (float 0–24)
-    if (typeof nowHour === 'number') {
-      oscClient.send('/weather/now_hour', nowHour);            // ex: 13.5 = 13h30
-    }
-    if (typeof sunriseHour === 'number') {
-      oscClient.send('/weather/sunrise_hour', sunriseHour);
-    }
-    if (typeof sunsetHour === 'number') {
-      oscClient.send('/weather/sunset_hour', sunsetHour);
-    }
-
-    // Heures formatées en texte (ISO et lisible)
-    if (typeof nowIso === 'string') {
-      oscClient.send('/weather/now_iso', nowIso);
-    }
-    if (typeof nowLocalStr === 'string') {
-      oscClient.send('/weather/now_local', nowLocalStr);
-    }
-    if (typeof sunriseIso === 'string') {
-      oscClient.send('/weather/sunrise_iso', sunriseIso);
-    }
-    if (typeof sunriseLocalStr === 'string') {
-      oscClient.send('/weather/sunrise_local', sunriseLocalStr);
-    }
-    if (typeof sunsetIso === 'string') {
-      oscClient.send('/weather/sunset_iso', sunsetIso);
-    }
-    if (typeof sunsetLocalStr === 'string') {
-      oscClient.send('/weather/sunset_local', sunsetLocalStr);
-    }
-
-    // Soleil : valeurs déjà "musicales" normalisées
-    if (typeof sunriseNorm === 'number') {
-      oscClient.send('/weather/sunrise_norm', sunriseNorm);       // 0–1
-    }
-    if (typeof sunsetNorm === 'number') {
-      oscClient.send('/weather/sunset_norm', sunsetNorm);         // 0–1
-    }
-    if (typeof dayLengthNorm === 'number') {
-      oscClient.send('/weather/day_length_norm', dayLengthNorm);  // 0–1
-    }
-    if (typeof dayProgress === 'number') {
-      oscClient.send('/weather/day_progress', dayProgress);       // 0–1
-    }
-    if (typeof isDay === 'number') {
-      oscClient.send('/weather/isDay', isDay);                    // 0 ou 1
-    }
-
-  } catch (err) {
-    console.error('Erreur dans sendWeather():', err.message);
+  // normalisations / progression
+  if (typeof sunriseNorm === 'number') {
+    oscClient.send('/weather/sunrise_norm', sunriseNorm);
+  }
+  if (typeof sunsetNorm === 'number') {
+    oscClient.send('/weather/sunset_norm', sunsetNorm);
+  }
+  if (typeof dayLengthNorm === 'number') {
+    oscClient.send('/weather/day_length_norm', dayLengthNorm);
+  }
+  if (typeof dayProgress === 'number') {
+    oscClient.send('/weather/day_progress', dayProgress);
+  }
+  if (typeof isDay === 'number') {
+    oscClient.send('/weather/isDay', isDay);
   }
 }
 
+// ====== BOUCLE ASYNCHRONE + BACKOFF ======
+let stopRequested = false;
 
-// ====== BOUCLE ======
+async function runLoop() {
+  let backoff = 0;
+  while (!stopRequested) {
+    try {
+      await sendWeather();
+      // si tout va bien, reset backoff
+      backoff = 0;
+      // attente normale
+      await new Promise(resolve => setTimeout(resolve, REFRESH_EVERY_MS));
+    } catch (err) {
+      // log et backoff
+      const statusInfo = err?.status ? ` (status ${err.status})` : '';
+      console.error('Erreur en requêtant l’API ou en traitant la réponse' + statusInfo + ':', err.message || err);
+      if (backoff === 0) backoff = BACKOFF_BASE;
+      else backoff = Math.min(Math.floor(backoff * BACKOFF_MULT), BACKOFF_MAX);
+      const jitter = Math.floor(Math.random() * 1000);
+      const wait = backoff + jitter;
+      console.log(`Attente de ${wait} ms avant nouvelle tentative (backoff).`);
+      await new Promise(resolve => setTimeout(resolve, wait));
+    }
+  }
+}
 
-// Premier envoi au lancement
-sendWeather();
-
-// Puis rafraîchissement régulier
-setInterval(sendWeather, REFRESH_EVERY_MS);
+// Démarrage
+runLoop();
 
 // Fermeture propre
 process.on('SIGINT', () => {
   console.log('\nFermeture du client OSC...');
-  oscClient.close();
+  stopRequested = true;
+  try { oscClient.close(); } catch (e) {}
   process.exit();
 });
