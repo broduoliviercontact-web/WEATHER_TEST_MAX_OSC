@@ -3,10 +3,10 @@ require('dotenv').config();
 
 // --- Configuration ---
 const API_KEY = process.env.API_CODE;         // ta clé API OpenWeatherMap
-const CITY = 'london';                         // ville par défaut (utilisée si data.name absent)
+const CITY = 'Aubervilliers';                         // ville par défaut (utilisée si data.name absent)
 const OSC_IP = '127.0.0.1';                   // IP où tourne Max / udpreceive
 const OSC_PORT = 7400;                        // port UDP dans Max
-let REFRESH_EVERY_MS = 60 * 1000;             // intervalle par défaut (ms) — change si besoin
+let REFRESH_EVERY_MS = 30 * 1000;             // intervalle par défaut (ms) — change si besoin
 
 // Backoff (en ms) pour erreurs réseau / rate-limit
 const BACKOFF_BASE = 2000;    // 2s
