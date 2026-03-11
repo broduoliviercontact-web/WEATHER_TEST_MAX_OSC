@@ -3,7 +3,7 @@ const { Client } = require('node-osc');
 require('dotenv').config();
 
 const API_KEY = process.env.API_CODE;              // ta clé API
-const CITY = 'toulouse';                          // ville
+const CITY = 'montrouge';                          // ville
 const OSC_IP = '127.0.0.1';                        // IP de la machine où tourne Max
 const OSC_PORT = 7400;                             // port UDP dans Max (udpreceive 7400)
 const REFRESH_EVERY_MS = 1 * 10 * 1000;            // intervalle (ici 1 min)
@@ -122,6 +122,13 @@ function sendOrderedOscMessages(messages) {
   });
 }
 
+function logOscMessages(messages) {
+  console.log('Sorties OSC :');
+  messages.forEach(([address, value], index) => {
+    console.log(`${index + 1}. ${address} = ${value}`);
+  });
+}
+
 // --- Fonctions météo ---
 
 async function getWeather() {
@@ -226,6 +233,7 @@ async function sendWeather() {
       isDay
     });
     console.log(`Nombre de sorties OSC envoyees : ${oscMessages.length}`);
+    logOscMessages(oscMessages);
     sendOrderedOscMessages(oscMessages);
 
   } catch (err) {
