@@ -1,8 +1,9 @@
+
 const { Client } = require('node-osc');
 require('dotenv').config();
 
 const API_KEY = process.env.API_CODE;              // ta clé API
-const CITY = 'london';                          // ville
+const CITY = 'toulouse';                          // ville
 const OSC_IP = '127.0.0.1';                        // IP de la machine où tourne Max
 const OSC_PORT = 7400;                             // port UDP dans Max (udpreceive 7400)
 const REFRESH_EVERY_MS = 1 * 10 * 1000;            // intervalle (ici 1 min)
