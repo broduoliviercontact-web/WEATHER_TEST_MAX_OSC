@@ -1,203 +1,265 @@
-#  WEATHER → OSC → MAX/MSP  
-### *Weather-driven sound & music installation toolkit*
+# WEATHER -> OSC -> MAX/MSP
 
----
+Weather-driven sound and music toolkit for Max/MSP.
 
-##  Concept
+This project turns live OpenWeather data into OSC messages that can drive a Max/MSP patch, an installation, a generative composition, or any system that reacts to a changing external world.
 
-**WEATHER → OSC → MAX/MSP** est un projet de **sonification de la météo en temps réel**.
+## Overview
 
-Il permet de transformer des données météorologiques réelles — température, vent, humidité, pluie, soleil, conditions extrêmes — en **paramètres musicaux exploitables dans Max/MSP** via OSC.
+The idea is simple:
 
-La météo devient ici :
-- une **partition lente**
-- un **système de modulation global**
-- une **force extérieure incontrôlable**
-- une écriture musicale qui échappe à l’interprète
+1. A Node.js script queries the OpenWeather API.
+2. Weather values are translated into stable OSC outputs.
+3. Max/MSP receives those values and maps them to sound, structure, rhythm, density, filters, or scene changes.
 
-> Quand le soleil se lève ailleurs, le son change ici.  
-> Quand une tempête apparaît, la structure se transforme.
+The weather becomes a score:
 
----
+- slow
+- unstable
+- external
+- location-dependent
+- impossible to fully control
 
-##  Intention artistique
+This is useful for:
 
-Ce projet ne cherche pas la précision scientifique, mais une **traduction sensible du réel**.
+- sound installations
+- long-duration generative pieces
+- weather-reactive performances
+- remote-location artworks
+- pedagogical projects around OSC, Max, and sonification
 
-La météo est :
-- continue
-- non cyclique
-- imprévisible
-- mondiale
+## Features
 
-Elle est idéale pour :
-- des **installations génératives**
-- des **pièces longues durées**
-- des dispositifs autonomes
-- des systèmes qui évoluent sans intervention humaine
+- Live weather fetch from OpenWeather
+- OSC output via `node-osc`
+- Ready-to-use values for music and sonification
+- Stable ordered OSC output lists
+- Support for raw API values and derived musical values
+- Max/MSP patch included in the repository
 
-Le son n’est plus déclenché :  
-il **réagit à un monde extérieur**.
+## Repository Contents
 
----
+- `weather-to-max.js`
+  Minimal weather fetch test.
+- `weather-osc-V1.js`
+  Early OSC version.
+- `weather-to-max-to-osc.js`
+  Main weather-to-OSC script.
+- `weather-to-max-to-osc2.js`
+  Fixed-order OSC output version with explicit message list.
+- `weather-to-max-to-osc3.js`
+  Alternate working version in the repository.
+- `weather-to-max-to-osc4.js`
+  Extended version with ordered output logging in the console.
+- `weather-extreme.js`
+  Utility for scanning or experimenting with extreme conditions.
+- `weather-to-max-osc.maxpat`
+  Max/MSP patch for OSC reception.
+- `WEATHER_API_OSC.csv`
+  OSC field reference.
 
-##  Principe général
+## Requirements
 
+- Node.js 18 or newer
+- Max/MSP
+- An OpenWeather API key
 
----
+## Installation
 
-## 🎛️ Données météorologiques exploitées
+Clone the repository and install dependencies:
 
-Les données envoyées sont pensées pour être **directement musicales** :
+```bash
+npm install
+```
 
-- Température
-- Humidité
-- Vent (force + direction)
-- Conditions météo (pluie, brouillard, sable, neige…)
-- Lever / coucher du soleil
-- Durée du jour
-- Progression dans la journée
-- Jour / nuit
-- Conditions extrêmes (tempêtes, poussière, tornade…)
+Create a `.env` file in the project root:
 
-Chaque donnée peut devenir :
-- une fréquence
-- une amplitude
-- un filtre
-- une densité
-- une probabilité
-- un changement de mode ou de forme
+```env
+API_CODE=your_openweathermap_api_key
+```
 
----
+## Quick Start
 
-##  Conditions météo → codes symboliques
+Run one of the weather scripts:
 
-Les conditions météo sont converties en **codes entiers**, facilitant les changements structurels.
+```bash
+node weather-to-max-to-osc4.js
+```
 
-| Code | Condition        |
-|-----:|------------------|
-| 0    | Clear            |
-| 1    | Clouds           |
-| 2    | Rain             |
-| 3    | Drizzle          |
-| 4    | Thunderstorm     |
-| 5    | Snow             |
-| 6    | Mist             |
-| 7    | Fog              |
-| 8    | Smoke            |
-| 9    | Haze             |
-| 10   | Dust             |
-| 11   | Sand             |
-| 12   | Ash              |
-| 13   | Squall           |
-| 14   | Tornado          |
-
-Ces codes peuvent servir à :
-- changer d’algorithme
-- basculer entre scènes
-- modifier radicalement la texture sonore
-
----
-
-##  Messages OSC envoyés
-
-Exemples d’adresses OSC :
+In Max/MSP, receive OSC on port `7400`:
 
 ```text
-/weather/temp              → température (°C)
-/weather/humidity          → humidité (%)
-/weather/wind              → vent (m/s)
-/weather/wind_deg          → direction du vent
-/weather/main              → condition météo (texte)
-/weather/mainCode          → condition météo (code)
-/weather/rain              → pluie (mm)
-/weather/snow              → neige (mm)
-
-/weather/sunrise_norm      → lever du soleil (0–1)
-/weather/sunset_norm       → coucher du soleil (0–1)
-/weather/day_length_norm   → durée du jour (0–1)
-/weather/day_progress      → progression dans la journée (0–1)
-/weather/isDay             → jour / nuit (0 ou 1)
-
-
-🧰 Contenu du projet
-.
-├── weather-to-max.js
-│   → récupération météo minimale
-│
-├── weather-osc.js
-│   → météo → OSC (version simple)
-│
-├── weather-to-max-to-osc.js
-│   → version principale :
-│     soleil, journée, codes météo, stabilité réseau
-│
-├── weather-to-max-to-osc2.js
-│   → variante expérimentale
-│
-├── weather-extreme.js
-│   → scan de villes aux conditions extrêmes
-│     (sable, tempêtes, neige, tornades…)
-│
-├── weather-to-max-osc.maxpat
-│   → patch Max/MSP de réception OSC
-│
-└── README.md
-
-🔑 Prérequis
-
-Node.js ≥ 18
-
-Max/MSP
-
-Une clé API OpenWeatherMap
-
-Créer un fichier .env :
-
-API_CODE=ta_cle_openweathermap
-
-Lancement :
-npm install
-node weather-to-max-to-osc.js
-
-
-Dans Max/MSP :
-
 udpreceive 7400
+```
 
-Cas d’usage artistiques
+By default, the scripts send to:
 
-installations sonores autonomes
+- host: `127.0.0.1`
+- port: `7400`
 
-œuvres dépendantes d’un lieu distant
+## Main Parameters
 
-performances météo-dépendantes
+In the scripts, you can quickly adjust:
 
-pièces génératives longue durée
+- `CITY`
+- `OSC_IP`
+- `OSC_PORT`
+- `REFRESH_EVERY_MS`
 
-art sonore & data-sonification
+Example:
 
-pédagogie (Max, OSC, sonification)
+```js
+const CITY = 'Paris';
+const OSC_IP = '127.0.0.1';
+const OSC_PORT = 7400;
+const REFRESH_EVERY_MS = 1 * 10 * 1000;
+```
 
-Approche recommandée
+## OSC Output
 
-éviter le mapping direct “1 donnée = 1 paramètre”
+The project can send both:
 
-préférer des relations indirectes
+- raw weather fields from the OpenWeather response
+- derived values designed for direct musical use
 
-laisser le système évoluer lentement
+Examples of musical outputs:
 
-accepter l’imprévisible
+```text
+/weather/api/temp
+/weather/api/humidity
+/weather/api/wind
+/weather/api/main
+/weather/api/mainCode
+/weather/api/sunrise_norm
+/weather/api/sunset_norm
+/weather/api/day_length_norm
+/weather/api/day_progress
+/weather/api/isDay
+```
 
-penser l’installation comme un organisme vivant
+Examples of raw API outputs:
 
-Licence
+```text
+/weather/api/coord/lon
+/weather/api/coord/lat
+/weather/api/weather/0/id
+/weather/api/weather/0/main
+/weather/api/weather/0/description
+/weather/api/main/temp
+/weather/api/main/feels_like
+/weather/api/wind/speed
+/weather/api/wind/deg
+/weather/api/sys/sunrise
+/weather/api/sys/sunset
+/weather/api/timezone
+```
 
-MIT — libre d’utilisation, de modification et de diffusion.
+## Fixed Ordered Output
 
-Si tu réalises une installation ou une pièce avec ce projet :
-je serais très curieux de l’entendre ou de la voir.
+The recent script versions are designed to keep a fixed OSC output order.
 
-La météo écrit.
-Le système écoute.
-Le son apparaît.
+That matters because:
+
+- some weather fields are optional
+- some cities return different subsets of data
+- Max patches are easier to maintain when output positions stay consistent
+
+Missing values are replaced with fallback values such as:
+
+- `-9999` for missing numbers
+- `""` for missing strings
+- `-1` for some derived state values
+
+## Weather Condition Codes
+
+Weather conditions are also mapped to integer codes for easier structural control:
+
+| Code | Condition |
+|---:|---|
+| 0 | Clear |
+| 1 | Clouds |
+| 2 | Rain |
+| 3 | Drizzle |
+| 4 | Thunderstorm |
+| 5 | Snow |
+| 6 | Mist |
+| 7 | Fog |
+| 8 | Smoke |
+| 9 | Haze |
+| 10 | Dust |
+| 11 | Sand |
+| 12 | Ash |
+| 13 | Squall |
+| 14 | Tornado |
+| -1 | Unknown / unmapped |
+
+Possible artistic uses:
+
+- scene switching
+- algorithm selection
+- changing synthesis mode
+- large-scale formal transformations
+
+## Musical Interpretation Ideas
+
+Some direct mappings you can try in Max/MSP:
+
+- temperature -> pitch range or filter cutoff
+- humidity -> reverb amount or spectral blur
+- wind speed -> modulation depth or noise density
+- day length -> piece duration scaling or harmonic openness
+- sunrise/sunset -> section boundaries
+- weather code -> structural state machine
+
+The most interesting results often come from indirect mappings rather than literal one-to-one control.
+
+## Console Logging
+
+Some script versions also print:
+
+- the received weather summary
+- the number of OSC outputs sent
+- the ordered list of OSC outputs with their values
+
+This is useful for debugging Max patches and checking output consistency across cities.
+
+## Suggested Workflow
+
+1. Start with `weather-to-max.js` to verify API access.
+2. Use `weather-to-max-to-osc2.js` or `weather-to-max-to-osc4.js` for stable ordered OSC output.
+3. Open `weather-to-max-osc.maxpat` in Max/MSP.
+4. Build your own mapping layer on top of the incoming weather values.
+
+## Notes
+
+- OpenWeather responses vary depending on location and current conditions.
+- Rain, snow, gust, sea level, and ground level fields may be absent.
+- OSC is sent over UDP, so transport behavior should be considered when building performance-critical systems.
+
+## Development
+
+Install dependencies:
+
+```bash
+npm install
+```
+
+Run a script:
+
+```bash
+node weather-to-max-to-osc2.js
+```
+
+Commit changes:
+
+```bash
+git add .
+git commit -m "Update weather scripts"
+git push
+```
+
+## License
+
+MIT
+
+If you build an installation, performance, or artwork with this project, I would be very interested in seeing or hearing the result.
